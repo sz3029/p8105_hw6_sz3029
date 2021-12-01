@@ -195,6 +195,51 @@ birthweight_df %>%
     x = 'Mother\'s race',
     y = 'Baby\'s Weight'
   )
+
+birthweight_df %>% 
+  modelr::add_predictions(model_1) %>% 
+  ggplot(aes(x = mrace, y = pred)) + 
+  geom_point(color = "red") +
+  geom_point(aes(y = bwt), color = "blue")
+  labs(
+    title = " Birth Weight v.s. Mother's race prediction",
+    x = 'Mother\'s race',
+    y = 'Baby\'s Weight'
+  )
 ```
 
+## Compare the model to two others
+
+```{r}
+#Splitting
+cv_df = 
+  modelr::crossv_mc(birthweight_df, length(birthweight_df)) 
+#training
+cv_df %>% pull(train) %>% .[[1]] %>% as_tibble
+#testing
+cv_df %>% pull(test) %>% .[[1]] %>% as_tibble
+
+cv_df =
+  cv_df %>% 
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble))
+
+model_1 = lm(bwt ~ babysex + bhead + blength + frace + gaweeks + 
+               mheight + momage + mrace +
+               ppwt + smoken + wtgain, data = birthweight_df)
+
+cv_df = 
+  cv_df %>% 
+  mutate(
+    mod_1  = map(train, ~lm(bwt ~ babysex + bhead + blength + frace + gaweeks + 
+               mheight + momage + mrace +
+               ppwt + smoken + wtgain, data = .x)),
+    mod_2  = map(train, ~lm(bwt ~ blength + gaweeks, data = .x)),
+    mod_3  = map(train, ~lm(bwt ~ babysex + bhead + blength, data = .x))) %>% 
+  mutate(
+    rmse_mod1 = map2_dbl(mod_1, test, ~modelr::rmse(model = .x, data = .y)),
+    rmse_mod2 = map2_dbl(mod_2, test, ~modelr::rmse(model = .x, data = .y)),
+    rmse_mod3 = map2_dbl(mod_3, test, ~modelr::rmse(model = .x, data = .y)))
+```
 
