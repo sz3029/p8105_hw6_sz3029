@@ -22,9 +22,9 @@ knitr::opts_chunk$set(
   # hide warning messages
   warning = FALSE,
   message = FALSE,
-  # set the figure to be 8 x 6, and the proportion it takes to be 95%
-  fig.width = 10,
-  fig.height = 8, 
+  # set the figure to be 8 x 6, and the proportion it takes to be 90%
+  fig.width = 8,
+  fig.height = 6, 
   out.width = "90%"
 )
 
@@ -87,13 +87,13 @@ birthweight_df
 
 They are 19 variables in total. We want to select the most important variables that affect baby's birth weight to build the regression model. We will use a data-driven model building process, backwards elimination.
 
-1. Select variables using backwards elimination
+1. Select variables using backwards elimination, using AIC criteria
 ```{r mlr}
 mult.fit = lm(bwt ~ ., data = birthweight_df)
-model.best = step(mult.fit, direction='backward')
+model.best = step(mult.fit, direction = 'backward')
 ```
 
-The "best" model proposed by backward selection is:
+The predictors of the "best" model proposed by backward selection is includes `babysex`, `bhead`, `blength`, `delwt`, `fincome`, `gaweeks`, `mheight`, `mrace`, `parity`, `ppwt`, and `smoken`:
 
 ```{r best}
 model.best$coefficients %>% knitr::kable(digits = 3, col.names = c("Coefficient"))
@@ -117,25 +117,30 @@ model_1 %>%
 ### Diagnostics
 
 ```{r resid}
+# Residuals
 modelr::add_residuals(birthweight_df, model_1) %>% head(10) %>% knitr::kable(digits = 3)
 
+# Predictions
 modelr::add_predictions(birthweight_df, model_1) %>% head(10) %>% knitr::kable(digits = 3)
 ```
 
 Show an example model residuals against fitted values
 
-```{r plot_ex}
+```{r plot_ex, message=FALSE}
 birthweight_df %>% 
   modelr::add_residuals(model_1) %>% 
-  ggplot(aes(x = gaweeks, y = resid)) + 
+  modelr::add_predictions(model_1) %>% 
+  ggplot(aes(x = pred, y = resid)) + 
   geom_point() +
-  geom_smooth(method = "lm", se = FALSE) +
+  geom_smooth(method = "lm", se = TRUE) +
   labs(
-    title = "Residuals v.s. Fitted Values of Birth Weight By Gestational Age in Weeks",
-    x = 'Gestational Age in Weeks',
-    y = 'Baby\'s Weight'
+    title = "Residuals v.s. Fitted Values of Birth Weight",
+    x = 'Fitted Values',
+    y = 'Residuals'
   )
 ```
+
+The residuals follows a normal distribution of a mean of 0. 
 
 ## Compare the model to two others
 
@@ -180,12 +185,36 @@ cv_df =
     rmse_mod2 = map2_dbl(mod_2, test, ~modelr::rmse(model = .x, data = .y)),
     rmse_mod3 = map2_dbl(mod_3, test, ~modelr::rmse(model = .x, data = .y)))
 
-cv_df %>% select(.id, rmse_mod1:rmse_mod3) %>% knitr::kable(digits = 3)
+cv_df %>% select(.id, rmse_mod1:rmse_mod3) %>% knitr::kable(digits = 3, 
+                                                            caption = "RMSE Table for the 3 models",
+                                                            col.names = c("Sample ID", "RMSE of Model 1", "RMSE of Model 2", "RMSE of Model 3"))
 ```
+
+From the chart above, we see that the RMSE of model 1 < RMSE of model 3 < RMSE of model 2. The violin plots below also show the same pattern:
+
+```{r}
+cv_df %>% 
+  select(starts_with("rmse")) %>% 
+  pivot_longer(
+    everything(),
+    names_to = "model", 
+    values_to = "rmse",
+    names_prefix = "rmse_") %>% 
+  mutate(model = fct_inorder(model)) %>% 
+  ggplot(aes(x = model, y = rmse)) + geom_violin() +
+  labs(
+    title = "RMSE for each models",
+    x = 'Model',
+    y = 'RMSE'
+  )
+```
+
 
 ## Problem 2
 
-```{r}
+### Load the weather dataset
+
+```{r p2, message=FALSE}
 weather_df = 
   rnoaa::meteo_pull_monitors(
     c("USW00094728"),
@@ -197,5 +226,94 @@ weather_df =
     tmin = tmin / 10,
     tmax = tmax / 10) %>%
   select(name, id, everything())
+
+weather_df
 ```
 
+### Parameter Inference via Bootstrapping
+
+We’ll focus on a simple linear regression with `tmax` as the response and `tmin` as the predictor, and are interested in the distribution of two quantities estimated from 
+these data:
+
+* $\hat{r}^2$
+
+* log(beta_0 * beta_1)
+
+1. Construct 5000 bootstrap samples, and produce estimates of these two quantities
+
+```{r}
+boot_straps <-
+  weather_df %>% 
+  modelr::bootstrap(n = 5000) %>% 
+  mutate(
+    models = map(strap, ~lm(tmax ~ tmin, data = .x) ),
+    results = map(models, broom::tidy),
+    summary = map(models, summary),
+    r_squared = map_dbl(summary, "r.squared")) %>% 
+  select(-strap, -models, -summary) %>% 
+  unnest(results) %>% 
+  select(.id, term, r_squared, estimate) %>%
+  pivot_wider(
+    names_from = "term",
+    values_from = "estimate",
+    names_prefix = "estimate_"
+  ) %>% 
+  janitor::clean_names() %>%
+  mutate(
+    log_beta_0_beta_1 = log(estimate_intercept*estimate_tmin)
+  ) %>%
+  select(id, r_squared, log_beta_0_beta_1)
+  
+boot_straps
+```
+
+2. Plot the distribution of the estimates 
+
+```{r}
+# for r-squared estimate
+boot_straps %>%
+  ggplot(aes(x = r_squared)) +
+  geom_density() +
+  labs(
+    title = "Density Plot for R-Square Estimation",
+    x = 'R-Square Estimates',
+    y = 'Density'
+  )
+
+boot_straps %>%
+  ggplot(aes(x = log_beta_0_beta_1)) +
+  geom_density() +
+  labs(
+    title = "Density Plot for log(beta_0 * beta_1) Estimation",
+    x = 'log(beta_0 * beta_1) Estimates',
+    y = 'Density'
+  )
+```
+
+**Description**
+
+For $\hat{r}^2$ :
+
+This distribution is a little bit left-skewed with a mean of 0.91, with a bit of a “shoulder” on the left end, features that may be related to the frequency with which some small outliers are included in the bootstrap sample.
+
+For log(beta_0 * beta_1):
+
+This distribution has a normal distribution shape around mean of 2.02, with a bit of a “shoulder” on the right end, features that may be related to the frequency with which some large outliers are included in the bootstrap sample.
+
+
+3. Identify the $2.5\%$ and $97.5\%$ quantiles to provide a $95\%$ confidence interval
+
+```{r ci}
+boot_straps %>%
+  summarize(
+    ci_lower_r_sq = quantile(r_squared, 0.025), 
+    ci_upper_r_sq = quantile(r_squared, 0.975),
+    ci_lower_log = quantile(log_beta_0_beta_1, 0.025), 
+    ci_upper_log = quantile(log_beta_0_beta_1, 0.975)) %>%
+  knitr::kable(digits = 3, col.names = c("95% CI lower bound for R squared est.",
+                                         "95% CI upper bound for R squared est.",
+                                         "95% CI lower bound for log(beta_0 * beta_1) est.",
+                                         "95% CI upper bound for log(beta_0 * beta_1) est."))
+```
+
+The 95% confidence interval for $\hat{r}^2$ is $(0.894, 0.927)$, and the 95% confidence interval for log(beta_0 * beta_1) is $(1.966, 2.059)$.
