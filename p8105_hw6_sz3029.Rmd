@@ -13,8 +13,7 @@ library(tidyverse)
 library(viridis)
 library(ggridges)
 library(patchwork)
-
-library(readxl)
+library(leaps)
 
 # General figure set up
 knitr::opts_chunk$set(
@@ -79,98 +78,38 @@ birthweight_df <-
       mrace == 8 ~ 'other'),
     # convert to factor
     mrace = fct_infreq(mrace),
-    
     )
+
+birthweight_df
 ```
 
 ### Build model
 
-They are 19 variables in total. We want to select the most important variables that affect baby's birth weight. 
+They are 19 variables in total. We want to select the most important variables that affect baby's birth weight to build the regression model. We will use a data-driven model building process, backwards elimination.
 
-1. Compute the marginal pmf/pdf of all variables, and get the p-values
+1. Select variables using backwards elimination
 ```{r mlr}
-# pmf/pdf
-compute_pmf <- function(x) {
-  fit = lm(bwt ~ x, data = birthweight_df)
-  p_value = summary(fit)$coefficients[,4][2]
-  return(p_value)
-}
-
-p_values = birthweight_df %>%
-  select(-bwt) %>%
-  map_dbl(compute_pmf)
-
-p_values = bind_rows(p_values)
-
-p_values %>% pivot_longer(
-  everything(),
-  values_to = 'p_value',
-  names_to = 'variables') %>%
-  mutate(
-    significant = ifelse(p_value > 0.025 | is.na(p_value), 'No', 'Yes')
-  ) %>%
-  knitr::kable(digits = 3)
+mult.fit = lm(bwt ~ ., data = birthweight_df)
+model.best = step(mult.fit, direction='backward')
 ```
 
-```{r plots}
-# graph
-i = 1
-compute_plist <- function(x) {
-  if (is.factor(x)) {
-    pl = birthweight_df %>% 
-    ggplot(aes(x = x, y = bwt)) +
-    geom_boxplot() +
-    labs(
-      x = '',
-      y = "birth weight",
-    )
-  } else {
-    pl = birthweight_df %>% 
-    ggplot(aes(x = x, y = bwt)) +
-    geom_point() +
-    geom_smooth(method = "lm") +
-    labs(
-      x = '',
-      y = "birth weight",
-    )
-  }
-  i = i + 1
-  return(pl)
-}
+The "best" model proposed by backward selection is:
 
-plist = birthweight_df %>%
-  select(-bwt) %>%
-  map(compute_plist)
-
-labels = birthweight_df %>%
-  select(-bwt) %>%
-  names()
-
-for (i in 1:length(plist)) {
-  plist[[i]] = plist[[i]] + labs(x = labels[[i]])
-}
-
-wrap_plots(plist, ncol = 4)
+```{r best}
+model.best$coefficients %>% knitr::kable(digits = 3, col.names = c("Coefficient"))
 ```
-
-p-value
-
-graph
-
-ppwt and delwt seems to be redundant with wtgain, delete delwt
 
 2. Select the variables and build the MLR model
 
 ```{r model}
-model_1 = lm(bwt ~ babysex + bhead + blength + frace + gaweeks + 
-               mheight + momage + mrace +
-               ppwt + smoken + wtgain, data = birthweight_df)
+model_1 = lm(bwt ~ babysex + bhead + blength + delwt + gaweeks + fincome + 
+               mheight + mrace + parity +
+               ppwt + smoken, data = birthweight_df)
 
 model_1 %>%
   broom::tidy() %>% 
   select(term, estimate, p.value) %>% 
   mutate(term = str_replace(term, "^babysex", "Baby sex: "),
-         term = str_replace(term, "^frace", "Father race: "),
          term = str_replace(term, "^mrace", "Mother race: ")) %>% 
   knitr::kable(digits = 3)
 ```
@@ -188,28 +127,19 @@ Show an example model residuals against fitted values
 ```{r plot_ex}
 birthweight_df %>% 
   modelr::add_residuals(model_1) %>% 
-  ggplot(aes(x = mrace, y = resid)) + 
-  geom_violin() +
+  ggplot(aes(x = gaweeks, y = resid)) + 
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
   labs(
-    title = "Violin Residuals Plots By Category of Mother's Race",
-    x = 'Mother\'s race',
-    y = 'Baby\'s Weight'
-  )
-
-birthweight_df %>% 
-  modelr::add_predictions(model_1) %>% 
-  ggplot(aes(x = mrace, y = pred)) + 
-  geom_point(color = "red") +
-  geom_point(aes(y = bwt), color = "blue")
-  labs(
-    title = " Birth Weight v.s. Mother's race prediction",
-    x = 'Mother\'s race',
+    title = "Residuals v.s. Fitted Values of Birth Weight By Gestational Age in Weeks",
+    x = 'Gestational Age in Weeks',
     y = 'Baby\'s Weight'
   )
 ```
 
 ## Compare the model to two others
 
+Use `cross_mc` to prepare CV training and testing sets
 ```{r}
 #Splitting
 cv_df = 
@@ -219,6 +149,14 @@ cv_df %>% pull(train) %>% .[[1]] %>% as_tibble
 #testing
 cv_df %>% pull(test) %>% .[[1]] %>% as_tibble
 
+```
+
+Compare the above model to two others
+
+* One using length at birth and gestational age as predictors (main effects only)
+
+* One using head circumference, length, sex, and all interactions (including the three-way interaction) between these
+```{r}
 cv_df =
   cv_df %>% 
   mutate(
@@ -236,10 +174,28 @@ cv_df =
                mheight + momage + mrace +
                ppwt + smoken + wtgain, data = .x)),
     mod_2  = map(train, ~lm(bwt ~ blength + gaweeks, data = .x)),
-    mod_3  = map(train, ~lm(bwt ~ babysex + bhead + blength, data = .x))) %>% 
+    mod_3  = map(train, ~lm(bwt ~ babysex + bhead + blength + babysex * bhead * blength, data = .x))) %>% 
   mutate(
     rmse_mod1 = map2_dbl(mod_1, test, ~modelr::rmse(model = .x, data = .y)),
     rmse_mod2 = map2_dbl(mod_2, test, ~modelr::rmse(model = .x, data = .y)),
     rmse_mod3 = map2_dbl(mod_3, test, ~modelr::rmse(model = .x, data = .y)))
+
+cv_df %>% select(.id, rmse_mod1:rmse_mod3) %>% knitr::kable(digits = 3)
+```
+
+## Problem 2
+
+```{r}
+weather_df = 
+  rnoaa::meteo_pull_monitors(
+    c("USW00094728"),
+    var = c("PRCP", "TMIN", "TMAX"), 
+    date_min = "2017-01-01",
+    date_max = "2017-12-31") %>%
+  mutate(
+    name = recode(id, USW00094728 = "CentralPark_NY"),
+    tmin = tmin / 10,
+    tmax = tmax / 10) %>%
+  select(name, id, everything())
 ```
 
