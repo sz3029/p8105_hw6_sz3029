@@ -316,4 +316,4 @@ boot_straps %>%
                                          "95% CI upper bound for log(beta_0 * beta_1) est."))
 ```
 
-The 95% confidence interval for $\hat{r}^2$ is $(0.894, 0.927)$, and the 95% confidence interval for log(beta_0 * beta_1) is $(1.966, 2.059)$.
+The 95% confidence interval for $\hat{r}^2$ is $(0.894, 0.928)$, and the 95% confidence interval for log(beta_0 * beta_1) is $(1.965, 2.059)$.
